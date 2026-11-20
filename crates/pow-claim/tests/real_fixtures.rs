@@ -1,0 +1,145 @@
+use pow_claim::{gather, node::testing::FakeNode, ProduceArgs};
+use serde_json::{json, Value};
+
+fn dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/real")
+}
+
+fn meta() -> Value {
+    serde_json::from_str(&std::fs::read_to_string(dir().join("meta.json")).unwrap()).unwrap()
+}
+
+fn s(v: &Value) -> String {
+    v.as_str().unwrap().to_string()
+}
+
+fn args(extra: &Value) -> ProduceArgs {
+    let m = meta();
+    let mut a = json!({"audience": m["audience"]});
+    for (k, v) in extra.as_object().unwrap() {
+        a[k] = v.clone();
+    }
+    ProduceArgs::parse(Some(&a)).unwrap()
+}
+
+#[test]
+fn real_gather_finds_the_recorded_claim() {
+    let m = meta();
+    let n = FakeNode::from_dir(dir()).unwrap();
+    let c = gather(&n, &args(&json!({}))).unwrap();
+    assert_eq!(hex::encode(c.k), s(&m["k"]));
+    assert_eq!(
+        hex::encode(c.evidence.claim_block_id),
+        s(&m["claim_block_id"])
+    );
+    assert_eq!(
+        hex::encode(c.evidence.pow_nullifier),
+        s(&m["pow_nullifier"])
+    );
+    assert_eq!(c.evidence.spend, None);
+    assert!(n.last_sign().is_none());
+}
+
+#[cfg(feature = "strict-ownership")]
+#[test]
+fn real_ownership_is_path_b_via_note_id() {
+    use pow_claim::ownership::{note_id_hex, owner, Path};
+
+    let m = meta();
+    let k = s(&m["k"]);
+    let bid = s(&m["claim_block_id"]);
+    let tx_hash = s(&m["tx_hash"]);
+    let n = FakeNode::from_dir(dir()).unwrap();
+    let block = n.blocks.get(&bid).unwrap();
+    let ev = n
+        .events
+        .get(&bid)
+        .unwrap()
+        .iter()
+        .find(|e| e["Tx"]["payload"]["PoWRewardClaimed"]["pow_nullifier"] == m["pow_nullifier"])
+        .unwrap();
+    let utxo = &ev["Tx"]["payload"]["PoWRewardClaimed"]["utxo"];
+
+    assert_ne!(utxo["note"]["pk"].as_str().unwrap().to_lowercase(), k);
+
+    let nid = note_id_hex(utxo).unwrap();
+    let tx = block["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["mantle_tx"]["hash"] == m["tx_hash"])
+        .unwrap();
+    assert_eq!(s(&tx["mantle_tx"]["hash"]), tx_hash);
+    let transfer = tx["mantle_tx"]["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["opcode"].as_u64() == Some(0))
+        .unwrap();
+    let in_inputs = transfer["payload"]["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| s(i).to_lowercase() == nid);
+    assert!(in_inputs, "NoteId {nid} not in Transfer inputs");
+    assert!(transfer["payload"]["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|o| s(&o["pk"]).to_lowercase() == k));
+
+    let (got, path) = owner(ev, block, std::slice::from_ref(&k)).unwrap();
+    assert_eq!(got, k);
+    assert_eq!(path, Path::SpentTo);
+    assert_ne!(path, Path::Direct);
+}
+
+#[test]
+fn real_discovery_uses_immutable_range() {
+    let m = meta();
+    let slot = m["slot"].as_u64().unwrap();
+    let n = FakeNode::from_dir(dir()).unwrap();
+    gather(&n, &args(&json!({}))).unwrap();
+    let ranges = n.ranges.borrow();
+    assert!(!ranges.is_empty());
+    assert!(
+        ranges.iter().any(|&(a, b)| a <= slot && slot <= b),
+        "{ranges:?}"
+    );
+}
+
+#[test]
+fn real_pinned_mode_matches() {
+    let m = meta();
+    let n = FakeNode::from_dir(dir()).unwrap();
+    let c = gather(
+        &n,
+        &args(&json!({
+            "claim_block_id": m["claim_block_id"], "pow_nullifier": m["pow_nullifier"],
+        })),
+    )
+    .unwrap();
+    assert_eq!(
+        hex::encode(c.evidence.claim_block_id),
+        s(&m["claim_block_id"])
+    );
+    assert_eq!(
+        hex::encode(c.evidence.pow_nullifier),
+        s(&m["pow_nullifier"])
+    );
+    assert!(n.ranges.borrow().is_empty(), "pinned mode must not scan");
+}
+
+#[test]
+fn real_excluded_nullifier_yields_not_found() {
+    let m = meta();
+    let n = FakeNode::from_dir(dir()).unwrap();
+    let e = gather(
+        &n,
+        &args(&json!({
+            "exclude_nullifiers": [m["pow_nullifier"]], "allow_unfinal": false,
+        })),
+    )
+    .unwrap_err();
+    assert!(e.contains("no redeemable"), "{e}");
+}

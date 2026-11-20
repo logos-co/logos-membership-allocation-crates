@@ -1,0 +1,30 @@
+[package]
+name = "zksign_light"
+version = "0.2.0"
+edition = "2021"
+description = "Logos blockchain zkSign helpers for auth vectors: offline Groth16 verification (feature `verify`) and the node's /wallet/sign/zk client (feature `client`)"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["verify", "client"]
+verify = ["dep:logos-blockchain-groth16", "dep:logos-blockchain-poseidon2", "dep:ark-ff", "dep:serde_json"]
+client = ["dep:ureq", "dep:serde_json"]
+
+[dependencies]
+hex = "0.4"
+auth_vector = { path = "../auth-vector" }
+serde_json = { version = "1", optional = true }
+ureq = { version = "2", default-features = false, optional = true }
+logos-blockchain-groth16 = { git = "https://github.com/logos-blockchain/logos-blockchain", rev = "f6d4267fe7d1ff8ab4cb30e9a18154bc66e10c30", optional = true }
+logos-blockchain-poseidon2 = { git = "https://github.com/logos-blockchain/logos-blockchain", rev = "f6d4267fe7d1ff8ab4cb30e9a18154bc66e10c30", optional = true }
+ark-ff = { version = "0.5", default-features = false, optional = true }
+
+[dev-dependencies]
+blake2 = "0.10"
+
+[[test]]
+name = "real_fixture"
+required-features = ["verify"]
+
+[lints]
+workspace = true

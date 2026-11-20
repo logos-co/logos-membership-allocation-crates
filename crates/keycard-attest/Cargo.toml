@@ -1,0 +1,17 @@
+[package]
+name = "keycard_attest"
+version = "0.2.0"
+edition = "2021"
+description = "Keycard IDENTIFY_CARD attestation parsing and verification: the card's challenge signature (the keycard scheme) and the CA chain (the attestation authoriser)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha2 = "0.10"
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+
+[dev-dependencies]
+hex = "0.4"
+
+[lints]
+workspace = true

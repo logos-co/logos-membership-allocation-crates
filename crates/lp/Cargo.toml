@@ -1,0 +1,16 @@
+[package]
+name = "paymaster_lp"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-module lp_* client with per-call timeouts for Logos Core service modules"
+license = "MIT OR Apache-2.0"
+
+[features]
+test-fake = []
+
+[dependencies]
+base64 = "0.22"
+serde_json = "1"
+
+[lints]
+workspace = true

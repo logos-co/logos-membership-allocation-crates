@@ -1,0 +1,15 @@
+[package]
+name = "paymaster_wire"
+version = "0.1.0"
+edition = "2021"
+description = "Wire primitives shared by sponsored-action services: failure prefixes, the advertisement data codec, account canonicalisation and a minimal protobuf codec"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+base58 = "0.2"
+hex = "0.4"
+base64 = "0.22"
+sha2 = "0.10"
+
+[lints]
+workspace = true

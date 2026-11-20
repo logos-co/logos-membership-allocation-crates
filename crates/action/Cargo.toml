@@ -1,0 +1,12 @@
+[package]
+name = "membership_allocation_action"
+version = "0.1.0"
+edition = "2021"
+description = "The RLN membership registration as the paymaster envelope carries it: protocol id, action kind, auth domain, action bytes, commitment check and grant"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "paymaster_client"
+version = "0.1.0"
+edition = "2021"
+description = "Client-side engine for sponsored-action services: provider discovery, auth payload production and the ask-in-turn request loop"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+paymaster_lp = { path = "../lp" }
+paymaster_wire = { path = "../wire" }
+auth_vector = { path = "../auth-vector" }
+serde_json = "1"
+hex = "0.4"
+
+[dev-dependencies]
+paymaster_lp = { path = "../lp", features = ["test-fake"] }
+
+[lints]
+workspace = true

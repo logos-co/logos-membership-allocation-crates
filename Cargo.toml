@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/action", "crates/lp", "crates/wire", "crates/service", "crates/client", "crates/auth-vector", "crates/auth-vectors", "crates/pow-claim", "crates/zksign-light", "crates/keycard-attest", "crates/keycard-client"]
+
+[workspace.lints.rust]
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+needless_pass_by_value = "warn"
+large_types_passed_by_value = "warn"
+trivially_copy_pass_by_ref = "warn"
+ref_option = "warn"
+ptr_arg = "warn"
+borrowed_box = "warn"
+implicit_clone = "warn"
+unnecessary_to_owned = "warn"
+iter_overeager_cloned = "warn"
+cloned_instead_of_copied = "warn"
+assigning_clones = "warn"
+clone_on_ref_ptr = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+arc_with_non_send_sync = "warn"
+mutex_atomic = "warn"
+redundant_allocation = "warn"
+box_collection = "warn"
+unnecessary_box_returns = "warn"
+large_enum_variant = "warn"
+await_holding_lock = "warn"
+needless_lifetimes = "warn"
+extra_unused_lifetimes = "warn"
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"

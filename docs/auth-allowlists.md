@@ -99,7 +99,7 @@ Common rules:
   requester's peer id off the accepted stream (`libp2p_module` ≥ 1.1.0) and
   that is the identity. The payload is empty: `produce_auth` answers
   `{"payload_hex": ""}`.
-- `PeerSigner::identity` with `args` `{"peer_id":"<from libp2p_module.peerInfo>"}`
+- `PeerSigner::identity` with `args` `{"peer_id":"<from membership_allocation_client_module.peer_id>"}`
   -> the multihash hex an operator allowlists; `peer-any` needs no list.
 - Verifier config: `{"allowlist":["12D3Koo…" | "<hex>", …]}`; `peer-any`
   takes `{}`.

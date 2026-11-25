@@ -400,6 +400,28 @@ pub fn call_libp2p(method: &str, args: &Value, timeout_ms: i32) -> Result<Value,
     Ok(env)
 }
 
+pub type NodeCall = fn(&str, &Value, i32) -> Result<Value, String>;
+
+static NODE: OnceLock<NodeCall> = OnceLock::new();
+
+pub fn set_node(call: NodeCall) {
+    let _ = NODE.set(call);
+}
+
+#[cfg(any(test, feature = "test-fake"))]
+pub fn call_node(method: &str, args: &Value, timeout_ms: i32) -> Result<Value, String> {
+    let _ = NODE.get();
+    call_libp2p(method, args, timeout_ms)
+}
+
+#[cfg(not(any(test, feature = "test-fake")))]
+pub fn call_node(method: &str, args: &Value, timeout_ms: i32) -> Result<Value, String> {
+    match NODE.get() {
+        Some(call) => call(method, args, timeout_ms),
+        None => Err(format!("{method}: this module runs no libp2p node")),
+    }
+}
+
 pub fn call_module_json(
     target: &str,
     method: &str,
@@ -427,8 +449,8 @@ pub fn call_module_json_classified(
 pub const PEER_DIRECTION_OUTBOUND: i64 = 1;
 const PEERS_TIMEOUT_MS: i32 = 10_000;
 
-pub fn outbound_peers() -> Result<usize, String> {
-    let v = call_libp2p(
+fn outbound_peers_through(call: NodeCall) -> Result<usize, String> {
+    let v = call(
         "connectedPeers",
         &serde_json::json!([PEER_DIRECTION_OUTBOUND]),
         PEERS_TIMEOUT_MS,
@@ -436,6 +458,14 @@ pub fn outbound_peers() -> Result<usize, String> {
     v.as_array()
         .map(Vec::len)
         .ok_or_else(|| format!("connectedPeers: not a peer list: {v}"))
+}
+
+pub fn outbound_peers() -> Result<usize, String> {
+    outbound_peers_through(call_libp2p)
+}
+
+pub fn node_outbound_peers() -> Result<usize, String> {
+    outbound_peers_through(call_node)
 }
 
 pub fn now_s() -> u64 {

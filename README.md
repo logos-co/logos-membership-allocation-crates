@@ -14,10 +14,10 @@ registration they carry.
 | Crate | What it is |
 |---|---|
 | `membership_allocation_action` | The membership registration as the paymaster envelope carries it: the protocol id `/logos/paymaster/rln-membership/1.0.0`, the action kind, the auth domain `rln-membership`, the action bytes (commitment and optional rate), the commitment check both sides apply, and the grant. |
-| `paymaster_lp` | A raw `lp_*` cross-module client with per-call timeouts, an owner-thread client cache, and the `CallError` classification of whether a failed call may have run. |
+| `paymaster_lp` | A raw `lp_*` cross-module client with per-call timeouts, an owner-thread client cache, and the `CallError` classification of whether a failed call may have run. `set_node` registers the libp2p node a client module runs in its own process; `call_node` reaches it. |
 | `paymaster_wire` | The request and response messages every service speaks (`envelope`), the advertisement data codec, account canonicalisation and the protobuf codec they are written with. |
 | `paymaster_service` | The provider side: `Engine` runs advertisement, the serialized request worker, the auth gate and credential replay protection for a `Service`. The gate verifies the vectors the service gives it (`Engine::with_vectors`) in process and asks a verifier module for any other. |
-| `paymaster_client` | The requesting side: provider discovery, auth payload production and the ask-in-turn loop for a `ClientAction`. |
+| `paymaster_client` | The requesting side: provider discovery, auth payload production and the ask-in-turn loop for a `ClientAction`. It reaches the network through the node its module owns (`paymaster_lp::call_node`), never through `libp2p_module`: given bootstrap peers it brings that node up on them (`bring_node_up`), and it brings it up without any to ask a configured provider. With no bootstrap peer discovery is unavailable, whether or not the node is up. |
 | `auth_vector` | The auth contract: produce/verify JSON shapes, the signed binding, the scheme × authoriser composition and registries. |
 | `auth_vectors` | The pieces: eth, lez, logos, keycard and peer schemes; allowlist, any, attestation and pow-claim authorisers; produce halves behind feature `sign`. |
 | `pow-claim` | The pow-claim authoriser: claim discovery (`produce`) and chain checks (`verify`). |

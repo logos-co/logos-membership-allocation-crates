@@ -23,7 +23,7 @@ impl Signer for PeerSigner {
             .as_ref()
             .and_then(|o| o.get("peer_id"))
             .and_then(Value::as_str)
-            .ok_or("peer identity: args.peer_id is required (the node's own, from libp2p_module.peerInfo)")?;
+            .ok_or("peer identity: args.peer_id is required (the requesting node's own, from membership_allocation_client_module.peer_id)")?;
         Ok(Box::new(PeerId(parse_peer_id(raw)?)))
     }
 }

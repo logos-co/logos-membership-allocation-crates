@@ -10,8 +10,11 @@ const PRODUCE_TIMEOUT_MS: i32 = 120_000;
 
 const LOOKUP_WAITS_S: [u64; 4] = [0, 2, 4, 8];
 const DISCO_TIMEOUT_MS: i32 = 30_000;
+const NODE_TIMEOUT_MS: i32 = 30_000;
 
 pub const JOIN_WAIT_S: u64 = 20;
+
+pub const NO_BOOTSTRAP_PEER: &str = "no bootstrap peer to look for a provider through";
 
 pub trait ClientAction {
     const CODEC: &'static str;
@@ -23,7 +26,7 @@ pub trait ClientAction {
 fn wait_joined() -> Result<usize, String> {
     let deadline = now_s() + JOIN_WAIT_S;
     loop {
-        let n = lp::outbound_peers()?;
+        let n = lp::node_outbound_peers()?;
         if n > 0 || now_s() >= deadline {
             return Ok(n);
         }
@@ -119,8 +122,59 @@ impl Discovery {
     }
 }
 
-pub fn lookup(service_id: &str, scope: &str, auth_type: &str) -> (Discovery, usize) {
-    if let Err(e) = lp::call_libp2p(
+fn bootstrap_node(multiaddr: &str) -> Result<Value, String> {
+    let (addr, peer_id) = multiaddr
+        .rsplit_once("/p2p/")
+        .filter(|(addr, peer_id)| !addr.is_empty() && !peer_id.is_empty() && !peer_id.contains('/'))
+        .ok_or_else(|| format!("bootstrap peer is not a /p2p/ multiaddr: {multiaddr}"))?;
+    Ok(json!({ "peerId": peer_id, "addrs": [addr] }))
+}
+
+pub fn node_config(bootstrap_peers: &[String]) -> Result<Value, String> {
+    let mut nodes: Vec<Value> = Vec::new();
+    for peer in bootstrap_peers {
+        let node = bootstrap_node(peer)?;
+        if !nodes.iter().any(|seen| seen["peerId"] == node["peerId"]) {
+            nodes.push(node);
+        }
+    }
+    Ok(json!({ "bootstrapNodes": nodes }))
+}
+
+pub fn bring_node_up(bootstrap_peers: &[String]) -> Result<(), String> {
+    let config = node_config(bootstrap_peers)?;
+    match lp::call_node("createNode", &json!([config.to_string()]), NODE_TIMEOUT_MS) {
+        Ok(_) => {}
+        Err(e) if e.contains("already created") => {}
+        Err(e) => return Err(e),
+    }
+    match lp::call_node("start", &json!([]), NODE_TIMEOUT_MS) {
+        Err(e) if !e.to_lowercase().contains("timeout") => Err(e),
+        _ => Ok(()),
+    }
+}
+
+fn node_for_discovery(bootstrap_peers: &[String]) -> Result<(), String> {
+    if bootstrap_peers.is_empty() {
+        return Err(NO_BOOTSTRAP_PEER.to_owned());
+    }
+    bring_node_up(bootstrap_peers)
+}
+
+pub fn lookup(
+    service_id: &str,
+    scope: &str,
+    auth_type: &str,
+    bootstrap_peers: &[String],
+) -> (Discovery, usize) {
+    if let Err(e) = node_for_discovery(bootstrap_peers) {
+        return (Discovery::Unavailable(e), 0);
+    }
+    look(service_id, scope, auth_type)
+}
+
+fn look(service_id: &str, scope: &str, auth_type: &str) -> (Discovery, usize) {
+    if let Err(e) = lp::call_node(
         "discoRegisterInterest",
         &json!([service_id]),
         DISCO_TIMEOUT_MS,
@@ -136,8 +190,7 @@ pub fn lookup(service_id: &str, scope: &str, auth_type: &str) -> (Discovery, usi
         if wait > 0 {
             sleep_s(wait);
         }
-        let reply = match lp::call_libp2p("discoLookup", &json!([service_id, ""]), DISCO_TIMEOUT_MS)
-        {
+        let reply = match lp::call_node("discoLookup", &json!([service_id, ""]), DISCO_TIMEOUT_MS) {
             Ok(r) => r,
             Err(e) => return (Discovery::Unavailable(e), peers),
         };
@@ -149,8 +202,12 @@ pub fn lookup(service_id: &str, scope: &str, auth_type: &str) -> (Discovery, usi
     (Discovery::NoneAdvertising, peers)
 }
 
-pub fn discover<A: ClientAction>(scope: &str, auth_type: &str) -> Result<Value, String> {
-    let (outcome, peers) = lookup(A::CODEC, scope, auth_type);
+pub fn discover<A: ClientAction>(
+    scope: &str,
+    auth_type: &str,
+    bootstrap_peers: &[String],
+) -> Result<Value, String> {
+    let (outcome, peers) = lookup(A::CODEC, scope, auth_type, bootstrap_peers);
     let candidates = match &outcome {
         Discovery::Unavailable(_) => return Err(outcome.message(A::PROVIDER, scope, auth_type)),
         Discovery::Found(c) => c.iter().map(Candidate::json).collect::<Vec<_>>(),
@@ -258,7 +315,7 @@ fn ask<A: ClientAction, M: AsRef<str>>(
         "timeoutMs": REQUEST_TIMEOUT_MS,
     });
     pr_args["multiaddrs"] = addrs.iter().map(|a| a.as_ref()).collect();
-    let pr = match lp::call_libp2p(
+    let pr = match lp::call_node(
         "protocolRequest",
         &json!([pr_args.to_string()]),
         REQUEST_CALL_TIMEOUT_MS,
@@ -356,6 +413,7 @@ pub struct Route<'a> {
     pub discover: bool,
     pub configured: Option<(&'a str, &'a str)>,
     pub spread: usize,
+    pub bootstrap_peers: &'a [String],
 }
 
 pub fn request<A: ClientAction>(
@@ -368,8 +426,13 @@ pub fn request<A: ClientAction>(
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<(String, Ended)> = None;
     let mut discovery = None;
+    let node = node_for_discovery(route.bootstrap_peers);
     if let (true, Some(scope)) = (route.discover, req.scope.as_deref()) {
-        match lookup(A::CODEC, scope, &auth_type).0 {
+        let outcome = match &node {
+            Ok(()) => look(A::CODEC, scope, &auth_type).0,
+            Err(e) => Discovery::Unavailable(e.clone()),
+        };
+        match outcome {
             Discovery::Found(mut found) => {
                 let at = route.spread % found.len();
                 found.rotate_left(at);
@@ -402,6 +465,21 @@ pub fn request<A: ClientAction>(
         }
     }
     if let Some((peer_id, multiaddr)) = route.configured {
+        let up = if route.bootstrap_peers.is_empty() {
+            bring_node_up(route.bootstrap_peers)
+        } else {
+            node
+        };
+        if let Err(e) = up {
+            tried.insert(0, e);
+            return Err(Failure {
+                kind: Kind::NoProvider,
+                error: tried.join("; before that: "),
+                provider: None,
+                code: None,
+                discovery,
+            });
+        }
         return match ask(action, peer_id, &[multiaddr], req, &request_b64) {
             Ok(mut out) => {
                 out["discovered"] = json!(false);
@@ -485,6 +563,7 @@ mod tests {
 
     fn scripted(peers: usize, records: Value, answer: Answer) {
         lp::fake::install(Box::new(move |_, method, _| match method {
+            "createNode" | "start" => Ok(json!(true)),
             "discoRegisterInterest" => Ok(json!(true)),
             "connectedPeers" => Ok(json!((0..peers)
                 .map(|i| format!("P{i}"))
@@ -554,10 +633,11 @@ mod tests {
     #[test]
     fn a_lookup_says_why_it_found_nobody() {
         let t = "peer-any";
-        let look = || lookup(Toy::CODEC, SCOPE, t);
+        let look = || lookup(Toy::CODEC, SCOPE, t, &peers());
 
-        lp::fake::install(Box::new(|_, m, _| {
-            Err(format!("{m}: service discovery not mounted"))
+        lp::fake::install(Box::new(|_, m, _| match m {
+            "createNode" | "start" => Ok(json!(true)),
+            m => Err(format!("{m}: service discovery not mounted")),
         }));
         let (d, _) = look();
         assert_eq!(
@@ -605,7 +685,7 @@ mod tests {
             )
         );
         assert_eq!(
-            lp::fake::calls()[1],
+            lp::fake::calls()[3],
             (
                 "connectedPeers".to_string(),
                 json!([lp::PEER_DIRECTION_OUTBOUND])
@@ -614,23 +694,173 @@ mod tests {
 
         scripted(0, json!([]), granted());
         assert_eq!(
-            discover::<Toy>(SCOPE, "").unwrap(),
+            discover::<Toy>(SCOPE, "", &peers()).unwrap(),
             json!({ "serviceId": Toy::CODEC, "candidates": [], "joined": false, "peers": 0 })
         );
         lp::fake::install(Box::new(|_, m, _| Err(format!("{m}: libp2p down"))));
         assert_eq!(
-            discover::<Toy>(SCOPE, "").unwrap_err(),
-            "discovery unavailable: discoRegisterInterest: libp2p down"
+            discover::<Toy>(SCOPE, "", &peers()).unwrap_err(),
+            "discovery unavailable: createNode: libp2p down"
         );
+        lp::fake::clear();
+    }
+
+    fn peers() -> Vec<String> {
+        vec![
+            "/dns4/a.example/tcp/30303/p2p/PeerA".to_string(),
+            "/ip4/10.0.0.2/tcp/1/p2p/PeerB".to_string(),
+        ]
+    }
+
+    #[test]
+    fn a_node_config_names_each_given_peer_once() {
+        let mut given = peers();
+        given.push("/ip4/9.9.9.9/tcp/9/p2p/PeerB".to_string());
+        assert_eq!(
+            node_config(&given).unwrap(),
+            json!({
+                "bootstrapNodes": [
+                    { "peerId": "PeerA", "addrs": ["/dns4/a.example/tcp/30303"] },
+                    { "peerId": "PeerB", "addrs": ["/ip4/10.0.0.2/tcp/1"] },
+                ],
+            })
+        );
+        assert_eq!(node_config(&[]).unwrap(), json!({ "bootstrapNodes": [] }));
+        for bad in [
+            "/ip4/10.0.0.2/tcp/1",
+            "/p2p/PeerA",
+            "/ip4/1.1.1.1/tcp/1/p2p/",
+        ] {
+            let e = node_config(&[bad.to_string()]).unwrap_err();
+            assert!(e.contains("not a /p2p/ multiaddr"), "{bad}: {e}");
+        }
+    }
+
+    fn with_node(create: Result<Value, String>, start: Result<Value, String>) {
+        lp::fake::install(Box::new(move |_, method, _| match method {
+            "createNode" => create.clone(),
+            "start" => start.clone(),
+            "discoRegisterInterest" => Ok(json!(true)),
+            "connectedPeers" => Ok(json!(["P0"])),
+            "discoLookup" => Ok(advertising(&["A"], "peer-any")),
+            m => Err(format!("unscripted {m}")),
+        }));
+    }
+
+    #[test]
+    fn a_lookup_with_peers_brings_the_node_up_first() {
+        let look = || lookup(Toy::CODEC, SCOPE, "peer-any", &peers()).0;
+        let found = |d: &Discovery| matches!(d, Discovery::Found(c) if c.len() == 1);
+
+        with_node(Ok(json!(true)), Ok(json!(true)));
+        assert!(found(&look()));
+        let calls = lp::fake::calls();
+        assert_eq!(
+            lp::fake::methods()[..3],
+            ["createNode", "start", "discoRegisterInterest"]
+        );
+        let config: Value = serde_json::from_str(calls[0].1[0].as_str().unwrap()).unwrap();
+        assert_eq!(config.as_object().unwrap().len(), 1);
+        assert_eq!(
+            config["bootstrapNodes"][0],
+            json!({ "peerId": "PeerA", "addrs": ["/dns4/a.example/tcp/30303"] })
+        );
+        assert_eq!(calls[1].1, json!([]));
+
+        with_node(
+            Err("createNode: node already created".into()),
+            Ok(json!(true)),
+        );
+        assert!(found(&look()));
+        assert_eq!(lp::fake::methods()[1], "start");
+
+        with_node(
+            Ok(json!(true)),
+            Err("start: Failed to start libp2p: timeout".into()),
+        );
+        assert!(found(&look()));
+
+        with_node(Err("createNode: bad transport".into()), Ok(json!(true)));
+        assert_eq!(
+            look(),
+            Discovery::Unavailable("createNode: bad transport".into())
+        );
+        assert_eq!(lp::fake::methods(), ["createNode"]);
+
+        with_node(Ok(json!(true)), Err("start: no listen address".into()));
+        assert_eq!(
+            look(),
+            Discovery::Unavailable("start: no listen address".into())
+        );
+
+        with_node(Ok(json!(true)), Ok(json!(true)));
+        assert_eq!(
+            lookup(Toy::CODEC, SCOPE, "peer-any", &[]).0,
+            Discovery::Unavailable(NO_BOOTSTRAP_PEER.into())
+        );
+
+        let bad = vec!["/ip4/10.0.0.2/tcp/1".to_string()];
+        let (d, _) = lookup(Toy::CODEC, SCOPE, "peer-any", &bad);
+        assert_eq!(d.code(), Some("unavailable"));
+        assert!(lp::fake::methods().is_empty());
+        lp::fake::clear();
+    }
+
+    #[test]
+    fn a_request_with_peers_brings_the_node_up_before_it_asks() {
+        let peers = peers();
+        let direct = Route {
+            discover: false,
+            configured: Some(("G", "/m")),
+            spread: 0,
+            bootstrap_peers: &peers,
+        };
+        lp::fake::install(Box::new(|_, method, _| match method {
+            "createNode" | "start" => Ok(json!(true)),
+            "protocolRequest" => Ok(json!({ "responseB64": b64(&SponsorResponse {
+                request_id: "r".into(),
+                status: Status::Granted,
+                message: None,
+                result: Some(b"ok".to_vec()),
+                code: None,
+            }
+            .encode()) })),
+            m => Err(format!("unscripted {m}")),
+        }));
+        assert_eq!(
+            request(&Toy, &direct, &req()).unwrap(),
+            json!({ "by": "G", "got": "ok", "discovered": false })
+        );
+        assert_eq!(
+            lp::fake::methods(),
+            ["createNode", "start", "protocolRequest"]
+        );
+
+        let discovering = Route {
+            discover: true,
+            configured: None,
+            spread: 0,
+            bootstrap_peers: &peers,
+        };
+        lp::fake::install(Box::new(|_, method, _| match method {
+            "createNode" => Err("createNode: bad transport".into()),
+            m => Err(format!("unscripted {m}")),
+        }));
+        let f = request(&Toy, &discovering, &req()).unwrap_err();
+        assert_eq!(f.json("peer")["kind"], "no_provider");
+        assert_eq!(f.json("peer")["discovery"], "unavailable");
+        assert_eq!(lp::fake::methods(), ["createNode"]);
         lp::fake::clear();
     }
 
     #[test]
     fn providers_are_asked_in_turn_until_one_acts_on_the_request() {
+        let peers = peers();
         let route = |configured| Route {
             discover: true,
             configured,
             spread: 1,
+            bootstrap_peers: &peers,
         };
         let asked = || {
             lp::fake::calls()
@@ -724,6 +954,7 @@ mod tests {
             discover: false,
             configured: Some(("G", "/m")),
             spread: 0,
+            bootstrap_peers: &[],
         };
         assert_eq!(
             request(&Toy, &direct, &req()).unwrap(),
@@ -735,10 +966,12 @@ mod tests {
 
     #[test]
     fn a_reply_that_cannot_be_used_stops_without_another_provider() {
+        let peers = peers();
         let route = Route {
             discover: true,
             configured: Some(("G", "/m")),
             spread: 0,
+            bootstrap_peers: &peers,
         };
         let asked = || {
             lp::fake::methods()
